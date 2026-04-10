@@ -38,7 +38,7 @@ class ResNet50Fc(BaseFeatureExtractor):
         if model_path:
             if os.path.exists(model_path):
                 model_resnet = models.resnet50(pretrained=False)
-                model_resnet.load_state_dict(torch.load(model_path))
+                model_resnet.load_state_dict(torch.load(model_path, weights_only=False))
             else:
                 raise Exception('invalid model path!')
         else:

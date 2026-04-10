@@ -36,7 +36,7 @@ classes_set = {
 uniformed_index = len(classes_set['source_classes'])
 
 train_transform = Compose([
-    Scale((256, 256)),
+    Resize((256, 256)),
     RandomCrop(224),
     RandomHorizontalFlip(),
     ToTensor(),
@@ -44,7 +44,7 @@ train_transform = Compose([
 ])
 
 test_transform = Compose([
-    Scale((256, 256)),
+    Resize((256, 256)),
     CenterCrop(224),
     ToTensor(),
     Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
