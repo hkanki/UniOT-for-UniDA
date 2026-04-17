@@ -12,6 +12,7 @@ parser.add_argument('--dataset', type=str, default='office31', help='dataset')
 parser.add_argument('--source', type=str, default='amazon', help='source domain')
 parser.add_argument('--target', type=str, default='dslr', help='target domain')
 parser.add_argument('--model_path', type=str, default=None, help='/path/to/your/model/final.pkl')
+parser.add_argument('--seed', type=int, default=1234, help='random seed')
 
 parser_args = parser.parse_args()
 

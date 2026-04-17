@@ -19,7 +19,7 @@ import torch.backends.cudnn as cudnn
 cudnn.benchmark = True
 cudnn.deterministic = True
 
-seed = 1234
+seed = parser_args.seed
 seed_everything(seed)
 
 if len(parser_args.gpu_index) < 1:
