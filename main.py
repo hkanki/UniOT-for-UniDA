@@ -1,7 +1,8 @@
 from data import *
 from eval import eval
 from utils.net import ResNet50Fc, ProtoCLS, CLS
-from utils.lib import seed_everything, sinkhorn, ubot_CCD, adaptive_filling
+from utils.lib import seed_everything, sinkhorn, ubot_CCD, adaptive_filling, ubot_CCD_debug
+from utils.analysis import build_ccd_rows, compute_summary_row, save_ccd_analysis_step, append_ccd_summary
 from utils.visualization import draw_tsne
 from utils.util import MemoryQueue
 from easydl import inverseDecaySheduler, OptimWithSheduler, TrainingModeManager, OptimizerManager, AccuracyCounter
@@ -76,6 +77,10 @@ with TrainingModeManager([feature_extractor, classifier], train=False) as mgr, t
             cnt_i += 1
             if cnt_i > n_batch-1:
                 break
+
+analysis_steps = {200, args.train.min_step // 2, args.train.min_step - 1}
+analysis_dir = os.path.join(log_dir, 'ccd_analysis')
+os.makedirs(analysis_dir, exist_ok=True)
 
 total_steps = tqdm(range(args.train.min_step), desc='global step')
 global_step = 0

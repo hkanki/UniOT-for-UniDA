@@ -77,6 +77,59 @@ def ubot_CCD(sim, beta, fake_size=0, fill_size=0, mode='minibatch', stopThr=1e-4
 
     return high_conf_label_id, high_conf_label, conf_label, new_beta
 
+def ubot_CCD_debug(sim, beta, fake_size=0, fill_size=0, mode='minibatch', stopThr=1e-4):
+    """
+    Debug version of ubot_CCD. Identical computation but returns all internal variables
+    as a dict. Call with the same (sim, beta) used for the training ubot_CCD call,
+    and always before beta is updated so the two calls see the same marginal.
+    Does not modify any state; wrap the call in torch.no_grad().
+    """
+    M = -sim
+    alpha = ot.unif(sim.size(0))
+
+    Q_st_np = ot.unbalanced.sinkhorn_knopp_unbalanced(
+        alpha, beta, M.detach().cpu().numpy(),
+        reg=0.01, reg_m=0.5, stopThr=stopThr
+    )
+    Q_st = torch.from_numpy(Q_st_np).float().cuda()
+
+    sum_pi = torch.sum(Q_st)
+    Q_st_bar = Q_st / sum_pi
+
+    if mode == 'minibatch':
+        Q_anchor = Q_st_bar[fake_size + fill_size:, :]
+    if mode == 'all':
+        Q_anchor = Q_st_bar
+
+    wt_i, pseudo_label = torch.max(Q_anchor, 1)
+    ws_j = torch.sum(Q_st_bar, 0)
+
+    uniformed_index = Q_st_bar.size(1)
+    conf_label = torch.where(wt_i > 1 / Q_st_bar.size(0), pseudo_label, uniformed_index)
+    high_conf_label = conf_label.clone()
+    source_private_label = torch.nonzero(ws_j < 1 / Q_st_bar.size(1))
+    for i in source_private_label:
+        high_conf_label = torch.where(high_conf_label == i, uniformed_index, high_conf_label)
+    high_conf_label_id = torch.nonzero(high_conf_label != uniformed_index).view(-1)
+
+    delta_i = (high_conf_label != uniformed_index).long()
+    new_beta = torch.sum(Q_st_bar, 0).cpu().numpy()
+
+    return {
+        'high_conf_label_id': high_conf_label_id,
+        'high_conf_label': high_conf_label,
+        'conf_label': conf_label,
+        'new_beta': new_beta,
+        'Q_st': Q_st,
+        'Q_st_bar': Q_st_bar,
+        'Q_anchor': Q_anchor,
+        'wt_i': wt_i,
+        'pseudo_label': pseudo_label,
+        'ws_j': ws_j,
+        'delta_i': delta_i,
+    }
+
+
 def adaptive_filling(ubot_feature_t, source_prototype, gamma, beta, fill_size, stopThr=1e-4):
     sim = torch.matmul(ubot_feature_t, source_prototype.t())
     max_sim, _ = torch.max(sim,1)

@@ -104,4 +104,3 @@ class CLS(nn.Module):
         after_lincls = self.ProtoCLS(before_lincls_feat)
         return before_lincls_feat, after_lincls
 
-
