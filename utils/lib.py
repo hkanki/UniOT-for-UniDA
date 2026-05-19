@@ -65,8 +65,13 @@ def ubot_CCD(sim, beta, fake_size=0, fill_size=0, mode='minibatch', stopThr=1e-4
 
     # filter by statistics mean
     uniformed_index = Q_st_bar.size(1)
+    # ターゲットサンプル側の条件：w^t_i > 1/B
+    ## 論文通りにやるなら>=となるため確認が必要
     conf_label = torch.where(wt_i > 1/Q_st_bar.size(0), pseudo_label, uniformed_index)
+    
     high_conf_label = conf_label.clone()
+    
+    # ソースサンプル側の条件：w^s_j > 1/|C_s|
     source_private_label = torch.nonzero(ws_j < 1/Q_st_bar.size(1))
     for i in source_private_label:
         high_conf_label = torch.where(high_conf_label == i, uniformed_index, high_conf_label)
@@ -76,6 +81,61 @@ def ubot_CCD(sim, beta, fake_size=0, fill_size=0, mode='minibatch', stopThr=1e-4
     new_beta = torch.sum(Q_st_bar,0).cpu().numpy()
 
     return high_conf_label_id, high_conf_label, conf_label, new_beta
+
+def ubot_CCD_debug(sim, beta, fake_size=0, fill_size=0, mode='minibatch', stopThr=1e-4):
+    """
+    CCD評価用のdebug関数。
+    学習には使わず、Q_st, wt_i, ws_j, pseudo_label, delta_i を取得するために使う。
+    """
+
+    # sim: target features と source prototypes の類似度
+    M = -sim
+    alpha = ot.unif(sim.size(0))
+
+    Q_st = ot.unbalanced.sinkhorn_knopp_unbalanced(
+        alpha,
+        beta,
+        M.detach().cpu().numpy(),
+        reg=0.01,
+        reg_m=0.5,
+        stopThr=stopThr
+    )
+
+    Q_st = torch.from_numpy(Q_st).float().cuda()
+
+    # Q_stを正規化
+    Q_st_bar = Q_st / torch.sum(Q_st)
+
+    # 現在のmini-batch部分だけを取り出す
+    if mode == 'minibatch':
+        Q_anchor = Q_st_bar[fake_size + fill_size:, :]
+    elif mode == 'all':
+        Q_anchor = Q_st_bar
+    else:
+        raise ValueError("mode must be 'minibatch' or 'all'")
+
+    # ターゲットサンプル側の信頼度 w_i^t
+    wt_i, pseudo_label = torch.max(Q_anchor, dim=1)
+
+    # ソースプロトタイプ側の信頼度 w_j^s
+    ws_j = torch.sum(Q_st_bar, dim=0)
+
+    # UniOTのdelta判定
+    # 元コードでは wt_i > 1/Q_st_bar.size(0) を使っているため、それに合わせる
+    target_threshold = 1.0 / Q_st_bar.size(0)
+    source_threshold = 1.0 / Q_st_bar.size(1)
+
+    delta_i = (wt_i > target_threshold) & (ws_j[pseudo_label] >= source_threshold)
+
+    return {
+        "Q_st": Q_st,
+        "Q_st_bar": Q_st_bar,
+        "Q_anchor": Q_anchor,
+        "wt_i": wt_i,
+        "ws_j": ws_j,
+        "pseudo_label": pseudo_label,
+        "delta_i": delta_i
+    }
 
 def adaptive_filling(ubot_feature_t, source_prototype, gamma, beta, fill_size, stopThr=1e-4):
     sim = torch.matmul(ubot_feature_t, source_prototype.t())
