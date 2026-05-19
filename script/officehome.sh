@@ -13,7 +13,7 @@
 
 cd ..
 py_main='main'
-gpu=$CUDA_VISIBLE_DEVICES
+gpu=0
 
 dataset='officehome'
 domains=(Art Clipart Product RealWorld)
@@ -25,7 +25,8 @@ do
     do
         if [[ "${source}" != "${target}" ]]
         then
-            python ${py_main}.py --gpu ${gpu} --exp ${exp} --dataset ${dataset} --source ${source} --target ${target}
+            echo "Running ${source} -> ${target}"
+            python3 ${py_main}.py --gpu_index ${gpu} --exp ${exp} --dataset ${dataset} --source ${source} --target ${target}
         fi
     done
 done

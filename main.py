@@ -23,10 +23,10 @@ seed = 1234
 seed_everything(seed)
 
 if len(parser_args.gpu_index) < 1:
-    os.environ["CUDA_VISIbetaLE_DEVICES"] = ""
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
     gpu_ids = []
 else:
-    os.environ["CUDA_VISIbetaLE_DEVICES"] = parser_args.gpu_index
+    os.environ["CUDA_VISIBLE_DEVICES"] = parser_args.gpu_index
     gpu_ids = list(map(int, parser_args.gpu_index))
 
 log_dir = f'{log_path}'
