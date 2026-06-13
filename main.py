@@ -199,7 +199,7 @@ while global_step < args.train.min_step:
             logger.add_scalar('acc_source', acc_source, global_step)
 
         if global_step % args.test.test_interval == 0:
-            results = eval(feature_extractor, classifier, target_test_dl, classes_set, gamma=gamma, beta=beta)
+            results = eval(feature_extractor,classifier,target_test_dl,classes_set,gamma=gamma,beta=beta,save_confusion=True,save_dir=log_dir,prefix=f"target_step_{global_step}")
             logger.add_scalar('cls_common_acc', results['cls_common_acc'], global_step)
             logger.add_scalar('cls_tp_acc', results['cls_tp_acc'], global_step)
             logger.add_scalar('tp_nmi', results['tp_nmi'], global_step)

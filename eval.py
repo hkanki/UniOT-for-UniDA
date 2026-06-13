@@ -9,6 +9,8 @@ from tqdm import tqdm
 import ot
 import faiss
 import os
+import csv
+import sklearn.metrics
 
 def run_kmeans(L2_feat, ncentroids, init_centroids=None, seed=None, gpu=False, min_points_per_centroid=1):
     if seed is None:
@@ -23,9 +25,73 @@ def run_kmeans(L2_feat, ncentroids, init_centroids=None, seed=None, gpu=False, m
     pred_centroid = np.squeeze(pred_centroid)
     return pred_centroid, kmeans.centroids
 
+def make_unified_label(label, source_classes, uniformed_index):
+    """
+    target-private クラスを unknown クラスに統一する関数
+    """
+    unified_label = label.copy()
+    for i in range(len(unified_label)):
+        if unified_label[i] not in source_classes:
+            unified_label[i] = uniformed_index
+    return unified_label
 
-def eval(feature_extractor, classifier, eval_dl, classes_set, 
-        gamma=0.7, beta=None, seed=None, uniformed_index=None):
+
+def save_metrics_from_confusion_matrix(cm, class_labels, filename):
+    """
+    混同行列から各クラスの評価指標を計算してCSVに保存する関数
+    """
+    total = cm.sum()
+    overall_accuracy = np.trace(cm) / total if total != 0 else 0.0
+
+    rows = []
+
+    for idx, class_label in enumerate(class_labels):
+        TP = cm[idx, idx]
+        FP = cm[:, idx].sum() - TP
+        FN = cm[idx, :].sum() - TP
+        TN = total - TP - FP - FN
+
+        class_accuracy = (TP + TN) / total if total != 0 else 0.0
+        precision = TP / (TP + FP) if (TP + FP) != 0 else 0.0
+        recall = TP / (TP + FN) if (TP + FN) != 0 else 0.0
+
+        # 通常のF値は precision と recall から計算する
+        f_measure = (
+            2 * precision * recall / (precision + recall)
+            if (precision + recall) != 0
+            else 0.0
+        )
+
+        support = cm[idx, :].sum()
+
+        rows.append([
+            class_label,
+            overall_accuracy,
+            class_accuracy,
+            precision,
+            recall,
+            f_measure,
+            support
+        ])
+
+    with open(filename, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "class",
+            "overall_accuracy",
+            "class_accuracy",
+            "precision",
+            "recall",
+            "f_measure_score",
+            "support"
+        ])
+        writer.writerows(rows)
+
+    print(f"{filename} に評価指標を出力しました。")
+
+def eval(feature_extractor,classifier,eval_dl,classes_set,gamma=0.7,beta=None,
+         seed=None,uniformed_index=None,save_confusion=False,save_dir=None,prefix="target"):
+    
     if seed is None:
         seed = int(os.environ['PYTHONHASHSEED'])
     if uniformed_index is None:
@@ -65,6 +131,38 @@ def eval(feature_extractor, classifier, eval_dl, classes_set,
     # obtain predict label
     _, __, pred_label, ___ = ubot_CCD(newsim, beta, fake_size=fake_size, fill_size=0, mode='minibatch', stopThr=stopThr)
     pred_label = pred_label.cpu().data.numpy()
+    
+    # ===== Confusion Matrix & Class-wise Metrics =====
+    if save_confusion:
+        if save_dir is None:
+            save_dir = "."
+
+        os.makedirs(save_dir, exist_ok=True)
+
+        # target-private の正解ラベルを unknown クラスに統一
+        unified_label_t = make_unified_label(
+            label_t,
+            classes_set["source_classes"],
+            uniformed_index
+        )
+
+        # 混同行列で使うクラス一覧
+        # source_classes + unknown
+        eval_classes = classes_set["source_classes"] + [uniformed_index]
+
+        cm = sklearn.metrics.confusion_matrix(
+            unified_label_t,
+            pred_label,
+            labels=eval_classes
+        )
+
+        # 混同行列そのものを保存
+        cm_path = os.path.join(save_dir, f"{prefix}_confusion_matrix.csv")
+        np.savetxt(cm_path, cm, delimiter=",", fmt="%d")
+
+        # 混同行列から各クラスの評価指標を保存
+        metrics_path = os.path.join(save_dir, f"{prefix}_class_metrics.csv")
+        save_metrics_from_confusion_matrix(cm, eval_classes, metrics_path)
 
     # obtain private samples
     filter = (lambda x: x in classes_set["tp_classes"])
