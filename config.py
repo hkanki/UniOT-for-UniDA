@@ -15,9 +15,37 @@ parser.add_argument('--model_path', type=str, default=None, help='/path/to/your/
 
 parser_args = parser.parse_args()
 
-config_file = f'config/{parser_args.dataset}-config.yaml'
-save_config = yaml.safe_load(open(config_file))
+# config_file = f'config/{parser_args.dataset}-config.yaml'
+# save_config = yaml.safe_load(open(config_file))
+# args = easydict.EasyDict(save_config)
+
+# main.pyの親プロセスから指定されたYAMLを優先して使用する
+specified_config_path = os.environ.get("UNIOT_CONFIG_PATH")
+
+if specified_config_path is not None:
+    config_file = specified_config_path
+else:
+    config_file = f"config/{parser_args.dataset}-config.yaml"
+
+if not os.path.isfile(config_file):
+    raise FileNotFoundError(
+        f"設定ファイルが見つかりません: {config_file}"
+    )
+
+with open(config_file, "r", encoding="utf-8") as config_fp:
+    save_config = yaml.safe_load(config_fp)
+
 args = easydict.EasyDict(save_config)
+
+# Kごとにログ保存先を分ける
+if specified_config_path is not None:
+    parser_args.exp = (
+        f"{parser_args.exp}_K{args.param.K}"
+    )
+
+print(f"Loaded config: {config_file}")
+print(f"Experiment name: {parser_args.exp}")
+print(f"Target prototype K: {args.param.K}")
 
 # assign args to variables
 if parser_args.source is None:

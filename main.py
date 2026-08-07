@@ -1,3 +1,98 @@
+import os
+import sys
+import subprocess
+
+
+def get_command_line_argument(option_name):
+    """
+    --dataset officehome のようなコマンドライン引数を取得する。
+    """
+    if option_name not in sys.argv:
+        return None
+
+    option_index = sys.argv.index(option_name)
+
+    if option_index + 1 >= len(sys.argv):
+        return None
+
+    return sys.argv[option_index + 1]
+
+
+def run_officehome_k_experiments():
+    """
+    Bashスクリプトを変更せず、Office-HomeのK感度分析を実行する。
+
+    親プロセス:
+        Kごとの子プロセスを順番に起動する。
+
+    子プロセス:
+        環境変数UNIOT_CONFIG_PATHで指定されたYAMLを読み込み、
+        通常の学習を実行する。
+    """
+    dataset = get_command_line_argument("--dataset")
+
+    # Office-Home以外は従来どおり実行
+    if dataset != "officehome":
+        return False
+
+    # 子プロセスでは再度4実験を起動しない
+    if os.environ.get("UNIOT_CONFIG_PATH") is not None:
+        return False
+
+    config_paths = [
+        "config/officehome_K/officehome-config_K50.yaml",
+        "config/officehome_K/officehome-config_K100.yaml",
+        "config/officehome_K/officehome-config_K150.yaml",
+        "config/officehome_K/officehome-config_K200.yaml",
+    ]
+
+    for config_path in config_paths:
+        if not os.path.isfile(config_path):
+            raise FileNotFoundError(
+                f"設定ファイルが見つかりません: {config_path}"
+            )
+
+    for config_path in config_paths:
+        config_name = os.path.basename(config_path)
+
+        print("=" * 70)
+        print(f"Start experiment: {config_name}")
+        print("=" * 70)
+
+        child_env = os.environ.copy()
+        child_env["UNIOT_CONFIG_PATH"] = config_path
+
+        command = [
+            sys.executable,
+            os.path.abspath(__file__),
+            *sys.argv[1:],
+        ]
+
+        completed_process = subprocess.run(
+            command,
+            env=child_env,
+            check=False,
+        )
+
+        if completed_process.returncode != 0:
+            raise RuntimeError(
+                f"実験に失敗しました: {config_name}\n"
+                f"return code: {completed_process.returncode}"
+            )
+
+        print("=" * 70)
+        print(f"Finished experiment: {config_name}")
+        print("=" * 70)
+
+    return True
+
+
+if run_officehome_k_experiments():
+    sys.exit(0)
+
+
+# ここから従来のimport
+
 from data import *
 from eval import eval
 from utils.net import ResNet50Fc, ProtoCLS, CLS
@@ -199,15 +294,74 @@ while global_step < args.train.min_step:
             logger.add_scalar('acc_source', acc_source, global_step)
 
         if global_step % args.test.test_interval == 0:
-            results = eval(feature_extractor, classifier, target_test_dl, classes_set, gamma=gamma, beta=beta)
-            logger.add_scalar('cls_common_acc', results['cls_common_acc'], global_step)
-            logger.add_scalar('cls_tp_acc', results['cls_tp_acc'], global_step)
-            logger.add_scalar('tp_nmi', results['tp_nmi'], global_step)
-            logger.add_scalar('cls_overall_acc', results['cls_overall_acc'], global_step)
-            logger.add_scalar('h_score', results['h_score'], global_step)
-            logger.add_scalar('h3_score', results['h3_score'], global_step)
-            clear_output()
+            results, prototypes_per_class = eval(
+                feature_extractor,
+                classifier,
+                cluster_head,
+                target_test_dl,
+                classes_set,
+                gamma=gamma,
+                beta=beta
+            )
 
+            logger.add_scalar(
+                'cls_common_acc',
+                results['cls_common_acc'],
+                global_step
+            )
+            logger.add_scalar(
+                'cls_tp_acc',
+                results['cls_tp_acc'],
+                global_step
+            )
+            logger.add_scalar(
+                'tp_nmi',
+                results['tp_nmi'],
+                global_step
+            )
+            logger.add_scalar(
+                'prototype_tp_nmi',
+                results['prototype_tp_nmi'],
+                global_step
+            )
+            logger.add_scalar(
+                'active_private_prototypes',
+                results['active_private_prototypes'],
+                global_step
+            )
+            logger.add_scalar(
+                'private_purity',
+                results['private_purity'],
+                global_step
+            )
+            logger.add_scalar(
+                'weighted_private_purity',
+                results['weighted_private_purity'],
+                global_step
+            )
+            logger.add_scalar(
+                'avg_prototypes_per_class',
+                results['avg_prototypes_per_class'],
+                global_step
+            )
+            logger.add_scalar(
+                'cls_overall_acc',
+                results['cls_overall_acc'],
+                global_step
+            )
+            logger.add_scalar(
+                'h_score',
+                results['h_score'],
+                global_step
+            )
+            logger.add_scalar(
+                'h3_score',
+                results['h3_score'],
+                global_step
+            )
+
+            clear_output()
+    
 # save final model
 data = {
         "feature_extractor": feature_extractor.state_dict(),
@@ -218,6 +372,40 @@ data = {
         }
 with open(os.path.join(log_dir, 'final.pkl'), 'wb') as f:
     torch.save(data, f)
+
+# 追加
+# ==========================================
+# 最終モデルの評価
+# ==========================================
+results, prototypes_per_class = eval(
+    feature_extractor,
+    classifier,
+    cluster_head,
+    target_test_dl,
+    classes_set,
+    gamma=gamma,
+    beta=beta
+)
+
+# カテゴリごとのプロトタイプ数を保存
+prototype_class_df = pd.DataFrame(
+    [
+        {
+            'class_label': class_label,
+            'prototype_count': prototype_count
+        }
+        for class_label, prototype_count
+        in prototypes_per_class.items()
+    ]
+)
+
+prototype_class_df.to_csv(
+    os.path.join(
+        log_dir,
+        'prototypes_per_class.csv'
+    ),
+    index=False
+)
 
 # save test result in csv file
 result = dict()

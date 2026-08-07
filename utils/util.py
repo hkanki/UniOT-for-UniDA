@@ -74,7 +74,95 @@ class MemoryQueue(nn.Module):
         id_t = torch.floor(torch.rand(size) * self.mem_feat.size(0)).long().cuda()
         sample_feat = self.mem_feat[id_t]
         return sample_feat
-    
+# 追加した指標
+def calculate_private_purity(labels, proto_pred):
+    """
+    各active prototypeのPurityを単純平均する。
+
+    labels:
+        target-privateサンプルの正解ラベル
+    proto_pred:
+        各target-privateサンプルの割当プロトタイプ番号
+    """
+    labels = np.asarray(labels)
+    proto_pred = np.asarray(proto_pred)
+
+    if labels.size == 0:
+        return np.nan
+
+    purities = []
+
+    for proto_id in np.unique(proto_pred):
+        mask = proto_pred == proto_id
+        proto_labels = labels[mask]
+
+        if proto_labels.size == 0:
+            continue
+
+        _, counts = np.unique(proto_labels, return_counts=True)
+        purity = counts.max() / counts.sum()
+        purities.append(purity)
+
+    if len(purities) == 0:
+        return np.nan
+
+    return float(np.mean(purities))
+
+
+def calculate_weighted_private_purity(labels, proto_pred):
+    """
+    割当サンプル数で重み付けしたPrivatePurityを計算する。
+    """
+    labels = np.asarray(labels)
+    proto_pred = np.asarray(proto_pred)
+
+    if labels.size == 0:
+        return np.nan
+
+    total_correct = 0
+
+    for proto_id in np.unique(proto_pred):
+        mask = proto_pred == proto_id
+        proto_labels = labels[mask]
+
+        if proto_labels.size == 0:
+            continue
+
+        _, counts = np.unique(proto_labels, return_counts=True)
+        total_correct += counts.max()
+
+    return float(total_correct / labels.size)
+
+
+def calculate_prototypes_per_class(labels, proto_pred):
+    """
+    各target-privateカテゴリが何個のプロトタイプに
+    割り当てられているかを計算する。
+    """
+    labels = np.asarray(labels)
+    proto_pred = np.asarray(proto_pred)
+
+    result = {}
+
+    for class_label in np.unique(labels):
+        class_mask = labels == class_label
+        assigned_prototypes = np.unique(proto_pred[class_mask])
+
+        result[int(class_label)] = int(assigned_prototypes.size)
+
+    return result
+
+
+def calculate_average_prototypes_per_class(labels, proto_pred):
+    """
+    1カテゴリ当たりの平均プロトタイプ数を計算する。
+    """
+    result = calculate_prototypes_per_class(labels, proto_pred)
+
+    if len(result) == 0:
+        return np.nan
+
+    return float(np.mean(list(result.values())))    
 
 class ResultsCalculator(object):
     """
@@ -165,3 +253,4 @@ class ResultsCalculator(object):
             if index in self.overall_accs:
                 tp_accs[index] = self.overall_accs[index]
         self.tp_acc = np.mean(list(tp_accs.values()))
+

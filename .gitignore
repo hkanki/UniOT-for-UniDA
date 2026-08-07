@@ -11,5 +11,4 @@ __pycache__
 script/officehome1.sh
 script/officehome2.sh
 
-config/office31-config.yaml
-config/officehome-config.yaml
+config
