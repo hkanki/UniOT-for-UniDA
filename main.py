@@ -1,6 +1,7 @@
 import os
 import sys
 import subprocess
+import numpy as np
 
 
 def get_command_line_argument(option_name):
@@ -40,10 +41,10 @@ def run_officehome_k_experiments():
         return False
 
     config_paths = [
-        "config/officehome_K/officehome-config_K50.yaml",
-        "config/officehome_K/officehome-config_K100.yaml",
         "config/officehome_K/officehome-config_K150.yaml",
         "config/officehome_K/officehome-config_K200.yaml",
+        "config/officehome_K/officehome-config_K250.yaml",
+        "config/officehome_K/officehome-config_K300.yaml",
     ]
 
     for config_path in config_paths:
@@ -175,6 +176,26 @@ with TrainingModeManager([feature_extractor, classifier], train=False) as mgr, t
 total_steps = tqdm(range(args.train.min_step), desc='global step')
 global_step = 0
 beta = None
+
+# step3にて追加したコード
+# ==========================================
+# Q_tt assignment collection
+# ==========================================
+
+# 学習終盤何stepを記録するか
+q_collect_steps = 1000
+
+q_collect_start_step = max(
+    0,
+    args.train.min_step
+    - q_collect_steps
+)
+
+# sample_idごとのQの合計
+q_assignment_sum = {}
+
+# sample_idが何回登場したか
+q_assignment_count = {}
 while global_step < args.train.min_step:
     iters = zip(source_train_dl, target_train_dl)
     for minibatch_id, ((im_source, label_source, id_source), (im_target, _, id_target)) in enumerate(iters):
@@ -228,6 +249,68 @@ while global_step < args.train.min_step:
         Q_tt_tilde = Q_tt * Q_tt.size(0)
         anchor_Q = Q_tt_tilde[:minibatch_size, :]
         neighbor_Q = Q_tt_tilde[minibatch_size:2*minibatch_size, :]
+        # ==========================================
+        # 学習終盤のanchor_Qを記録
+        # ==========================================
+
+        if global_step >= q_collect_start_step:
+
+            with torch.no_grad():
+
+                # sampleごとに確率分布へ正規化
+                anchor_prob = (
+                    anchor_Q
+                    / anchor_Q.sum(
+                        dim=1,
+                        keepdim=True
+                    ).clamp_min(1e-12)
+                )
+
+                anchor_prob_np = (
+                    anchor_prob
+                    .detach()
+                    .cpu()
+                    .numpy()
+                )
+
+                target_ids_np = (
+                    id_target
+                    .detach()
+                    .cpu()
+                    .numpy()
+                    .reshape(-1)
+                )
+
+                for sample_id, q_vector in zip(
+                    target_ids_np,
+                    anchor_prob_np
+                ):
+
+                    sample_id = int(
+                        sample_id
+                    )
+
+                    if sample_id not in q_assignment_sum:
+
+                        q_assignment_sum[
+                            sample_id
+                        ] = (
+                            q_vector.copy()
+                        )
+
+                        q_assignment_count[
+                            sample_id
+                        ] = 1
+
+                    else:
+
+                        q_assignment_sum[
+                            sample_id
+                        ] += q_vector
+
+                        q_assignment_count[
+                            sample_id
+                        ] += 1
 
         # compute loss_PCD
         loss_local = 0
@@ -362,14 +445,114 @@ while global_step < args.train.min_step:
 
             clear_output()
     
+# step3コードの追加
+# ==========================================
+# Q assignment matrixを作成
+# ==========================================
+
+q_sample_ids = sorted(
+    q_assignment_sum.keys()
+)
+
+q_assignment_matrix = []
+
+for sample_id in q_sample_ids:
+
+    averaged_q = (
+        q_assignment_sum[
+            sample_id
+        ]
+        / q_assignment_count[
+            sample_id
+        ]
+    )
+
+    # 念のため再正規化
+    averaged_q = (
+        averaged_q
+        / max(
+            averaged_q.sum(),
+            1e-12
+        )
+    )
+
+    q_assignment_matrix.append(
+        averaged_q
+    )
+
+
+if len(q_assignment_matrix) > 0:
+
+    q_assignment_matrix = np.stack(
+        q_assignment_matrix,
+        axis=0
+    ).astype(
+        np.float32
+    )
+
+else:
+
+    q_assignment_matrix = np.empty(
+        (0, K),
+        dtype=np.float32
+    )
+
+
+q_sample_ids = np.asarray(
+    q_sample_ids,
+    dtype=np.int64
+)
+
+print(
+    "Q assignment matrix:",
+    q_assignment_matrix.shape
+)
+
+
 # save final model
+# step3の修正前
+# data = {
+#         "feature_extractor": feature_extractor.state_dict(),
+#         "classifier": classifier.state_dict(),
+#         'cluster_head': cluster_head.state_dict(),
+#         'K': K,
+#         'beta': torch.from_numpy(beta)
+#         }
+
+# step3の修正後
 data = {
-        "feature_extractor": feature_extractor.state_dict(),
-        "classifier": classifier.state_dict(),
-        'cluster_head': cluster_head.state_dict(),
-        'K': K,
-        'beta': torch.from_numpy(beta)
-        }
+    "feature_extractor":
+        feature_extractor.state_dict(),
+
+    "classifier":
+        classifier.state_dict(),
+
+    "cluster_head":
+        cluster_head.state_dict(),
+
+    "K":
+        K,
+
+    "beta":
+        torch.from_numpy(beta),
+
+    # ==================================
+    # Q_tt assignment
+    # ==================================
+    "q_assignment_matrix":
+        torch.from_numpy(
+            q_assignment_matrix
+        ),
+
+    "q_sample_ids":
+        torch.from_numpy(
+            q_sample_ids
+        ),
+
+    "q_collect_start_step":
+        q_collect_start_step
+}
+
 with open(os.path.join(log_dir, 'final.pkl'), 'wb') as f:
     torch.save(data, f)
 
@@ -377,7 +560,7 @@ with open(os.path.join(log_dir, 'final.pkl'), 'wb') as f:
 # ==========================================
 # 最終モデルの評価
 # ==========================================
-results, prototypes_per_class = eval(
+results, prototype_details = eval(
     feature_extractor,
     classifier,
     cluster_head,
@@ -385,6 +568,12 @@ results, prototypes_per_class = eval(
     classes_set,
     gamma=gamma,
     beta=beta
+)
+
+prototypes_per_class = (
+    prototype_details[
+        "before_merge"
+    ]
 )
 
 # カテゴリごとのプロトタイプ数を保存
