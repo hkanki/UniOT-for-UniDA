@@ -17,9 +17,13 @@ from utils.util import (
     calculate_private_purity,
     calculate_weighted_private_purity,
     calculate_prototypes_per_class,
-    calculate_average_prototypes_per_class
-)
+    calculate_average_prototypes_per_class,
 
+    calculate_categories_per_prototype,
+    calculate_mixed_prototype_ratio,
+    calculate_average_categories_per_prototype,
+    calculate_max_categories_per_prototype
+)
 # 新たに追加
 import pandas as pd
 from sklearn.metrics import normalized_mutual_info_score
@@ -144,6 +148,37 @@ def eval(feature_extractor, classifier, cluster_head,eval_dl, classes_set,
         private_label,
         private_proto_pred
     )
+    # =====================================================
+    # K不足によるカテゴリ混在の分析
+    # =====================================================
+
+    categories_per_prototype = (
+        calculate_categories_per_prototype(
+            private_label,
+            private_proto_pred
+        )
+    )
+
+    mixed_prototype_ratio = (
+        calculate_mixed_prototype_ratio(
+            private_label,
+            private_proto_pred
+        )
+    )
+
+    avg_categories_per_prototype = (
+        calculate_average_categories_per_prototype(
+            private_label,
+            private_proto_pred
+        )
+    )
+
+    max_categories_per_prototype = (
+        calculate_max_categories_per_prototype(
+            private_label,
+            private_proto_pred
+        )
+    )
     # obtain results
     ncentroids = len(classes_set["tp_classes"])
     private_pred, _ = run_kmeans(private_feat, ncentroids, init_centroids=None, seed=seed, gpu=True)
@@ -159,27 +194,67 @@ def eval(feature_extractor, classifier, cluster_head,eval_dl, classes_set,
     # }
     
     results_dict = {
-        'cls_common_acc': results.common_acc_aver,
-        'cls_tp_acc': results.tp_acc,
+        'cls_common_acc':
+            results.common_acc_aver,
 
-        # 従来名を維持
-        'tp_nmi': results.tp_nmi,
-        'kmeans_tp_nmi': results.tp_nmi,
+        'cls_tp_acc':
+            results.tp_acc,
 
-        'prototype_tp_nmi': prototype_tp_nmi,
-        'active_private_prototypes': active_private_prototypes,
-        'private_purity': private_purity,
-        'weighted_private_purity': weighted_private_purity,
-        'avg_prototypes_per_class': avg_prototypes_per_class,
+        'tp_nmi':
+            results.tp_nmi,
 
-        'cls_overall_acc': results.overall_acc_aver,
-        'h_score': results.h_score,
-        'h3_score': results.h3_score
+        'kmeans_tp_nmi':
+            results.tp_nmi,
+
+        'prototype_tp_nmi':
+            prototype_tp_nmi,
+
+        'active_private_prototypes':
+            active_private_prototypes,
+
+        'private_purity':
+            private_purity,
+
+        'weighted_private_purity':
+            weighted_private_purity,
+
+        'avg_prototypes_per_class':
+            avg_prototypes_per_class,
+
+        # 新規
+        'mixed_prototype_ratio':
+            mixed_prototype_ratio,
+
+        'avg_categories_per_prototype':
+            avg_categories_per_prototype,
+
+        'max_categories_per_prototype':
+            max_categories_per_prototype,
+
+        'cls_overall_acc':
+            results.overall_acc_aver,
+
+        'h_score':
+            results.h_score,
+
+        'h3_score':
+            results.h3_score
     }
     # 変更前
 
     # 変更後
-    return results_dict, prototypes_per_class
+    prototype_details = {
+        "prototypes_per_class":
+            prototypes_per_class,
+
+        "categories_per_prototype":
+            categories_per_prototype
+    }
+
+    return (
+        results_dict,
+        prototype_details
+    )
 
 
 if __name__ == '__main__':
@@ -264,7 +339,7 @@ if __name__ == '__main__':
     if torch.is_tensor(beta):
         beta = beta.cpu().numpy()
 
-    results, prototypes_per_class = eval(
+    results, prototype_details = eval(
         feature_extractor,
         classifier,
         cluster_head,
@@ -274,9 +349,61 @@ if __name__ == '__main__':
         beta=beta
     )
 
+    prototypes_per_class = (
+        prototype_details[
+            "prototypes_per_class"
+        ]
+    )
+
+    categories_per_prototype = (
+        prototype_details[
+            "categories_per_prototype"
+        ]
+    )
     print(results)
     print(prototypes_per_class)
 
+    categories_prototype_df = pd.DataFrame(
+        [
+            {
+                "prototype_id":
+                    proto_id,
+
+                "sample_count":
+                    info[
+                        "sample_count"
+                    ],
+
+                "num_categories":
+                    info[
+                        "num_categories"
+                    ],
+
+                "categories":
+                    ",".join(
+                        map(
+                            str,
+                            info[
+                                "categories"
+                            ]
+                        )
+                    ),
+
+                "majority_category":
+                    info[
+                        "majority_category"
+                    ],
+
+                "purity":
+                    info[
+                        "purity"
+                    ]
+            }
+
+            for proto_id, info
+            in categories_per_prototype.items()
+        ]
+    )
     prototype_class_df = pd.DataFrame(
         [
             {
@@ -291,11 +418,29 @@ if __name__ == '__main__':
     save_dir = os.path.dirname(
         parser_args.model_path
     )
+    categories_prototype_df.to_csv(
+        os.path.join(
+            save_dir,
+            "categories_per_prototype.csv"
+        ),
+        index=False
+    )
+
 
     prototype_class_df.to_csv(
         os.path.join(
             save_dir,
             'prototypes_per_class_eval.csv'
+        ),
+        index=False
+    )
+    
+    pd.DataFrame(
+        [results]
+    ).to_csv(
+        os.path.join(
+            save_dir,
+            "result_eval.csv"
         ),
         index=False
     )

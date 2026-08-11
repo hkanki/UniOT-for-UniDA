@@ -164,6 +164,187 @@ def calculate_average_prototypes_per_class(labels, proto_pred):
 
     return float(np.mean(list(result.values())))    
 
+def calculate_categories_per_prototype(
+    labels,
+    proto_pred
+):
+    """
+    各prototypeに、
+    何個のtarget-privateカテゴリが混在しているかを計算する。
+
+    Returns
+    -------
+    result : dict
+
+    例:
+    {
+        0: {
+            "sample_count": 20,
+            "num_categories": 3,
+            "majority_category": 26,
+            "purity": 0.60
+        },
+        ...
+    }
+    """
+
+    labels = np.asarray(labels)
+    proto_pred = np.asarray(proto_pred)
+
+    result = {}
+
+    for proto_id in np.unique(proto_pred):
+
+        mask = (
+            proto_pred == proto_id
+        )
+
+        proto_labels = labels[
+            mask
+        ]
+
+        if proto_labels.size == 0:
+            continue
+
+        unique_labels, counts = (
+            np.unique(
+                proto_labels,
+                return_counts=True
+            )
+        )
+
+        majority_index = (
+            np.argmax(counts)
+        )
+
+        majority_category = int(
+            unique_labels[
+                majority_index
+            ]
+        )
+
+        purity = float(
+            counts[
+                majority_index
+            ]
+            / counts.sum()
+        )
+
+        result[int(proto_id)] = {
+            "sample_count":
+                int(
+                    proto_labels.size
+                ),
+
+            "num_categories":
+                int(
+                    unique_labels.size
+                ),
+
+            "categories":
+                [
+                    int(x)
+                    for x in unique_labels
+                ],
+
+            "majority_category":
+                majority_category,
+
+            "purity":
+                purity
+        }
+    return result
+
+def calculate_mixed_prototype_ratio(
+    labels,
+    proto_pred
+):
+    """
+    複数のtarget-privateカテゴリを含むprototypeの割合。
+    """
+
+    result = (
+        calculate_categories_per_prototype(
+            labels,
+            proto_pred
+        )
+    )
+
+    if len(result) == 0:
+        return np.nan
+
+    mixed_count = 0
+
+    for proto_info in result.values():
+
+        if (
+            proto_info[
+                "num_categories"
+            ]
+            >= 2
+        ):
+            mixed_count += 1
+
+    return float(
+        mixed_count
+        / len(result)
+    )
+    
+def calculate_average_categories_per_prototype(
+    labels,
+    proto_pred
+):
+    """
+    active prototype 1個あたりに含まれる
+    target-privateカテゴリ数の平均。
+    """
+
+    result = (
+        calculate_categories_per_prototype(
+            labels,
+            proto_pred
+        )
+    )
+
+    if len(result) == 0:
+        return np.nan
+
+    num_categories = [
+        info["num_categories"]
+        for info in result.values()
+    ]
+
+    return float(
+        np.mean(
+            num_categories
+        )
+    )
+    
+def calculate_max_categories_per_prototype(
+    labels,
+    proto_pred
+):
+    """
+    1つのprototypeに最大何カテゴリ混在しているか。
+    """
+
+    result = (
+        calculate_categories_per_prototype(
+            labels,
+            proto_pred
+        )
+    )
+
+    if len(result) == 0:
+        return np.nan
+
+    return int(
+        max(
+            info["num_categories"]
+            for info in result.values()
+        )
+    )
+
 class ResultsCalculator(object):
     """
     calculate final results (including overall acc, common acc, target-private(tp) acc, h-score, tp NMI, h3-score)
