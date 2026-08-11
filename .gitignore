@@ -1,5 +1,6 @@
 .gitignore
 
+config
 checkpoint
 log
 used
@@ -10,5 +11,3 @@ __pycache__
 
 script/officehome1.sh
 script/officehome2.sh
-
-config
