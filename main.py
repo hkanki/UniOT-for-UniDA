@@ -19,6 +19,12 @@ import torch.backends.cudnn as cudnn
 cudnn.benchmark = True
 cudnn.deterministic = True
 
+# 提案手法で追加した関数
+import numpy as np
+
+from utils.prototype_split import (
+    analyze_prototype_splits
+)
 seed = 1234
 seed_everything(seed)
 
@@ -57,6 +63,15 @@ feature_extractor = nn.DataParallel(feature_extractor).train(True)
 classifier = nn.DataParallel(classifier).train(True)
 cluster_head = nn.DataParallel(cluster_head).train(True)
 
+save_config["runtime"] = {
+    "dataset": parser_args.dataset,
+    "source": source,
+    "target": target,
+    "exp": parser_args.exp,
+    "K": K,
+    "seed": seed
+}
+
 with open(os.path.join(log_dir, 'config.yaml'), 'w') as f:
     f.write(yaml.dump(save_config))
 
@@ -76,6 +91,27 @@ with TrainingModeManager([feature_extractor, classifier], train=False) as mgr, t
             cnt_i += 1
             if cnt_i > n_batch-1:
                 break
+
+# 提案手法で追加
+# =====================================================
+# Q_tt collection for prototype split analysis
+# =====================================================
+
+# 学習最後の何step分のQ_ttを集めるか
+q_collect_steps = 1000
+
+q_collect_start_step = max(
+    0,
+    args.train.min_step
+    - q_collect_steps
+)
+
+# sample IDごとにQを蓄積
+q_assignment_sum = {}
+
+# sample IDごとの出現回数
+q_assignment_count = {}
+
 
 total_steps = tqdm(range(args.train.min_step), desc='global step')
 global_step = 0
@@ -134,6 +170,69 @@ while global_step < args.train.min_step:
         anchor_Q = Q_tt_tilde[:minibatch_size, :]
         neighbor_Q = Q_tt_tilde[minibatch_size:2*minibatch_size, :]
 
+        # 提案手法の追加コード
+        # =====================================================
+        # Q_tt collection
+        # 学習後半のQ_ttをsample IDごとに保存
+        # =====================================================
+
+        if global_step >= q_collect_start_step:
+
+            # 各sampleについてQの合計が1になるように正規化
+            anchor_prob = (
+                anchor_Q
+                / anchor_Q.sum(
+                    dim=1,
+                    keepdim=True
+                ).clamp_min(1e-12)
+            )
+
+            anchor_prob_np = (
+                anchor_prob
+                .detach()
+                .cpu()
+                .numpy()
+            )
+
+            target_ids_np = (
+                id_target
+                .detach()
+                .cpu()
+                .numpy()
+                .reshape(-1)
+            )
+
+            for sample_id, q_vector in zip(
+                target_ids_np,
+                anchor_prob_np
+            ):
+
+                sample_id = int(
+                    sample_id
+                )
+
+                if sample_id not in q_assignment_sum:
+
+                    q_assignment_sum[
+                        sample_id
+                    ] = (
+                        q_vector.copy()
+                    )
+
+                    q_assignment_count[
+                        sample_id
+                    ] = 1
+
+                else:
+
+                    q_assignment_sum[
+                        sample_id
+                    ] += q_vector
+
+                    q_assignment_count[
+                        sample_id
+                    ] += 1
+                    
         # compute loss_PCD
         loss_local = 0
         for i in range(minibatch_size):
@@ -208,16 +307,162 @@ while global_step < args.train.min_step:
             logger.add_scalar('h3_score', results['h3_score'], global_step)
             clear_output()
 
+# 提案手法の追加コード
+# =====================================================
+# Build averaged Q assignment matrix
+# =====================================================
+
+q_sample_ids = sorted(
+    q_assignment_sum.keys()
+)
+
+if len(q_sample_ids) == 0:
+
+    raise RuntimeError(
+        "Q_tt was not collected."
+    )
+
+q_assignment_matrix = np.stack(
+    [
+        q_assignment_sum[
+            sample_id
+        ]
+        / q_assignment_count[
+            sample_id
+        ]
+
+        for sample_id
+        in q_sample_ids
+    ],
+    axis=0
+)
+
+q_sample_ids = np.asarray(
+    q_sample_ids,
+    dtype=np.int64
+)
+
+# safety check
+if (
+    q_assignment_matrix.shape[1]
+    != K
+):
+
+    raise ValueError(
+        "Q matrix prototype dimension "
+        f"{q_assignment_matrix.shape[1]} "
+        f"does not match K={K}."
+    )
+
+if not np.all(
+    np.isfinite(
+        q_assignment_matrix
+    )
+):
+
+    raise ValueError(
+        "Q matrix contains NaN or Inf."
+    )
+
+print(
+    "Collected target samples:",
+    q_assignment_matrix.shape[0]
+)
+
+print(
+    "Number of prototypes:",
+    q_assignment_matrix.shape[1]
+)
+
+print(
+    "Target train size:",
+    target_size
+)
+
+# 修正前
 # save final model
+# data = {
+#         "feature_extractor": feature_extractor.state_dict(),
+#         "classifier": classifier.state_dict(),
+#         'cluster_head': cluster_head.state_dict(),
+#         'K': K,
+#         'beta': torch.from_numpy(beta)
+#         }
+
+# 提案手法の場合
 data = {
-        "feature_extractor": feature_extractor.state_dict(),
-        "classifier": classifier.state_dict(),
-        'cluster_head': cluster_head.state_dict(),
-        'K': K,
-        'beta': torch.from_numpy(beta)
-        }
+    "feature_extractor":
+        feature_extractor.state_dict(),
+
+    "classifier":
+        classifier.state_dict(),
+
+    "cluster_head":
+        cluster_head.state_dict(),
+
+    "K":
+        K,
+
+    "beta":
+        torch.from_numpy(beta),
+
+    # ===========================
+    # Q_tt split analysis
+    # ===========================
+
+    "q_assignment_matrix":
+        torch.from_numpy(
+            q_assignment_matrix
+        ).float(),
+
+    "q_sample_ids":
+        torch.from_numpy(
+            q_sample_ids
+        ).long(),
+
+    "q_collect_start_step":
+        q_collect_start_step
+}
+
 with open(os.path.join(log_dir, 'final.pkl'), 'wb') as f:
     torch.save(data, f)
+
+# 提案手法の追加コード
+# =====================================================
+# Prototype split analysis
+# =====================================================
+
+split_results = (
+    analyze_prototype_splits(
+        q_assignment_matrix,
+        min_samples=10,
+        random_state=seed
+    )
+)
+
+split_result_df = pd.DataFrame(
+    split_results
+)
+
+split_result_df = (
+    split_result_df
+    .sort_values(
+        "split_improvement",
+        ascending=False,
+        na_position="last"
+    )
+    .reset_index(
+        drop=True
+    )
+)
+
+split_result_df.to_csv(
+    os.path.join(
+        log_dir,
+        "prototype_split_analysis.csv"
+    ),
+    index=False
+)
 
 # save test result in csv file
 result = dict()
