@@ -104,4 +104,265 @@ class CLS(nn.Module):
         after_lincls = self.ProtoCLS(before_lincls_feat)
         return before_lincls_feat, after_lincls
 
+class DynamicPrototypeLinear(nn.Module):
+    """
+    prototypeを動的に追加できるlinear layer。
 
+    通常のnn.Linearのように
+    weightをK x Dとして扱えるが、
+    内部ではprototypeごとに
+    nn.Parameterとして保持する。
+    """
+
+    def __init__(
+        self,
+        in_dim,
+        out_dim
+    ):
+
+        super(
+            DynamicPrototypeLinear,
+            self
+        ).__init__()
+
+        self.in_dim = int(
+            in_dim
+        )
+
+
+        # ----------------------------------------------------
+        # nn.Linearと同じ初期化を利用
+        # ----------------------------------------------------
+
+        initial_linear = nn.Linear(
+            in_dim,
+            out_dim,
+            bias=False
+        )
+
+
+        initial_weight = (
+            initial_linear
+            .weight
+            .detach()
+            .clone()
+        )
+
+
+        self.weight_list = (
+            nn.ParameterList()
+        )
+
+
+        for i in range(
+            out_dim
+        ):
+
+            parameter = nn.Parameter(
+                initial_weight[
+                    i
+                ].clone()
+            )
+
+            self.weight_list.append(
+                parameter
+            )
+
+
+    @property
+    def weight(
+        self
+    ):
+        """
+        K x D のweight matrixを返す。
+        """
+
+        return torch.stack(
+            list(
+                self.weight_list
+            ),
+            dim=0
+        )
+
+
+    @property
+    def out_features(
+        self
+    ):
+
+        return len(
+            self.weight_list
+        )
+
+
+    def forward(
+        self,
+        x
+    ):
+
+        return F.linear(
+            x,
+            self.weight
+        )
+
+
+    def add_prototype(
+        self,
+        weight
+    ):
+        """
+        prototypeを1つ追加する。
+        """
+
+        new_parameter = nn.Parameter(
+            weight.detach().clone()
+        )
+
+        self.weight_list.append(
+            new_parameter
+        )
+
+        return new_parameter
+
+
+class DynamicProtoCLS(nn.Module):
+    """
+    提案手法用の動的target prototype classifier。
+    """
+
+    def __init__(
+        self,
+        in_dim,
+        out_dim,
+        temp=0.05
+    ):
+
+        super(
+            DynamicProtoCLS,
+            self
+        ).__init__()
+
+        self.fc = DynamicPrototypeLinear(
+            in_dim,
+            out_dim
+        )
+
+        self.tmp = temp
+
+        self.weight_norm()
+
+
+    @property
+    def num_prototypes(
+        self
+    ):
+
+        return (
+            self.fc.out_features
+        )
+
+
+    def forward(
+        self,
+        x
+    ):
+
+        x = F.normalize(
+            x,
+            dim=1
+        )
+
+        x = (
+            self.fc(x)
+            / self.tmp
+        )
+
+        return x
+
+
+    def weight_norm(
+        self
+    ):
+
+        with torch.no_grad():
+
+            for parameter in (
+                self.fc.weight_list
+            ):
+
+                norm = parameter.data.norm(
+                    p=2
+                ).clamp_min(
+                    1e-12
+                )
+
+                parameter.data.div_(
+                    norm
+                )
+
+
+    def split_prototype(
+        self,
+        prototype_id,
+        child_weight_1,
+        child_weight_2
+    ):
+        """
+        prototype kを2つへ分割。
+
+        元のprototype:
+            child_weight_1へ置換
+
+        新prototype:
+            child_weight_2として追加
+        """
+
+        prototype_id = int(
+            prototype_id
+        )
+
+
+        child_weight_1 = F.normalize(
+            child_weight_1.reshape(
+                1,
+                -1
+            ),
+            dim=1
+        ).reshape(-1)
+
+
+        child_weight_2 = F.normalize(
+            child_weight_2.reshape(
+                1,
+                -1
+            ),
+            dim=1
+        ).reshape(-1)
+
+
+        with torch.no_grad():
+
+            self.fc.weight_list[
+                prototype_id
+            ].copy_(
+                child_weight_1
+            )
+
+
+        new_parameter = (
+            self.fc.add_prototype(
+                child_weight_2
+            )
+        )
+
+
+        new_prototype_id = (
+            self.num_prototypes
+            - 1
+        )
+
+
+        return (
+            new_parameter,
+            new_prototype_id
+        )

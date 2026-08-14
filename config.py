@@ -12,6 +12,9 @@ parser.add_argument('--dataset', type=str, default='office31', help='dataset')
 parser.add_argument('--source', type=str, default='amazon', help='source domain')
 parser.add_argument('--target', type=str, default='dslr', help='target domain')
 parser.add_argument('--model_path', type=str, default=None, help='/path/to/your/model/final.pkl')
+# 提案手法による追加
+parser.add_argument( '--method', type=str, default=None, choices=[ 'uniot', 'proposed' ], help='training method' )
+
 
 parser_args = parser.parse_args()
 
@@ -59,3 +62,82 @@ mu = args.param.mu
 temp = args.param.temp
 lam = args.param.lam
 MQ_size = args.param.MQ_size
+
+# ============================================================
+# Method
+# ============================================================
+
+if parser_args.method is None:
+
+    method_name = str(
+        args.method.name
+    ).lower()
+
+else:
+
+    method_name = str(
+        parser_args.method
+    ).lower()
+
+
+if method_name not in [
+    "uniot",
+    "proposed"
+]:
+
+    raise ValueError(
+        f"Unknown method: {method_name}"
+    )
+
+
+use_prototype_split = (
+    method_name
+    == "proposed"
+)
+
+
+# ============================================================
+# Prototype split parameters
+# ============================================================
+
+split_cfg = (
+    args.method.prototype_split
+)
+
+
+split_start_ratio = float(
+    split_cfg.start_ratio
+)
+
+split_check_interval = int(
+    split_cfg.check_interval
+)
+
+split_collect_steps = int(
+    split_cfg.collect_steps
+)
+
+tau_mix = float(
+    split_cfg.tau_mix
+)
+
+split_min_samples = int(
+    split_cfg.min_samples
+)
+
+split_min_group_samples = int(
+    split_cfg.min_group_samples
+)
+
+
+# collect_stepsがcheck_intervalより長いと
+# 収集区間が重複して扱いづらくなるため確認
+if (
+    split_collect_steps
+    > split_check_interval
+):
+
+    raise ValueError(
+        "prototype_split.collect_steps "
+        "must be <= check_interval."
+    )

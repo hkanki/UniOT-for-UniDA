@@ -3,6 +3,108 @@ import numpy as np
 from sklearn.cluster import KMeans
 from scipy.spatial.distance import jensenshannon
 
+def find_mixed_prototypes(
+    q_assignment_matrix,
+    tau_mix,
+    min_samples=10
+):
+    """
+    M_k > tau_mix を満たすprototypeを取得する。
+    """
+
+    q_assignment_matrix = np.asarray(
+        q_assignment_matrix,
+        dtype=np.float64
+    )
+
+
+    if (
+        q_assignment_matrix.ndim
+        != 2
+    ):
+
+        raise ValueError(
+            "q_assignment_matrix "
+            "must be 2-dimensional."
+        )
+
+
+    hard_assignment = np.argmax(
+        q_assignment_matrix,
+        axis=1
+    )
+
+
+    num_prototypes = (
+        q_assignment_matrix.shape[1]
+    )
+
+
+    results = []
+
+
+    for proto_id in range(
+        num_prototypes
+    ):
+
+        mask = (
+            hard_assignment
+            == proto_id
+        )
+
+
+        q_vectors = (
+            q_assignment_matrix[
+                mask
+            ]
+        )
+
+
+        sample_count = int(
+            q_vectors.shape[0]
+        )
+
+
+        if (
+            sample_count
+            < min_samples
+        ):
+
+            continue
+
+
+        mixedness = (
+            calculate_within_dispersion(
+                q_vectors
+            )
+        )
+
+
+        results.append(
+            {
+                "prototype_id":
+                    int(
+                        proto_id
+                    ),
+
+                "sample_count":
+                    sample_count,
+
+                "before_dispersion":
+                    float(
+                        mixedness
+                    ),
+
+                "is_mixed":
+                    bool(
+                        mixedness
+                        > tau_mix
+                    )
+            }
+        )
+
+
+    return results
 
 def calculate_js_divergence(
     p,
@@ -60,7 +162,7 @@ def calculate_within_dispersion(
     1つのprototypeに属するQベクトル群の
     内部ばらつきを計算する。
 
-    これが W_k_before に相当する。
+    これが M_k (mean_q_kからの平均JSD) に相当する。
     """
 
     q_vectors = np.asarray(
@@ -273,6 +375,128 @@ def calculate_split_improvement(
             float(
                 split_improvement
             )
+    }
+
+
+def build_split_children(
+    q_assignment_matrix,
+    feature_matrix,
+    prototype_id,
+    min_group_samples=5,
+    random_state=1234
+):
+    """
+    prototype_idに属するsampleをQベクトルでKMeans(n_clusters=2)により
+    2群に分割し、各群に属するfeatureベクトルの平均をL2正規化した
+    child prototype weightを作る。
+
+    重要な制約:
+      - どのsampleがprototype_idに属するか (hard assignment) と、
+        2群への分割は、Q_assignment_matrix (Q-vector) のみで決める。
+      - feature_matrixは、生成する2つのchild prototype weightの
+        初期値を作る目的だけに使用する。
+
+    どちらかの群がmin_group_samples未満の場合はNoneを返す
+    (この場合、呼び出し側はsplitを行わずに次回再判定する)。
+    """
+
+    q_assignment_matrix = np.asarray(
+        q_assignment_matrix,
+        dtype=np.float64
+    )
+
+    feature_matrix = np.asarray(
+        feature_matrix,
+        dtype=np.float64
+    )
+
+    if q_assignment_matrix.ndim != 2:
+        raise ValueError(
+            "q_assignment_matrix must be 2-dimensional."
+        )
+
+    if feature_matrix.ndim != 2:
+        raise ValueError(
+            "feature_matrix must be 2-dimensional."
+        )
+
+    if (
+        q_assignment_matrix.shape[0]
+        != feature_matrix.shape[0]
+    ):
+        raise ValueError(
+            "q_assignment_matrix and feature_matrix "
+            "must have the same number of samples."
+        )
+
+    prototype_id = int(prototype_id)
+
+    # 各sampleは argmax_j Q_ij によってprototypeへhard assignment
+    hard_assignment = np.argmax(
+        q_assignment_matrix,
+        axis=1
+    )
+
+    mask = hard_assignment == prototype_id
+
+    q_vectors = q_assignment_matrix[mask]
+    feature_vectors = feature_matrix[mask]
+
+    # 2群に分割するにはQベクトルを使う
+    split_labels = split_q_vectors(
+        q_vectors,
+        random_state=random_state
+    )
+
+    if split_labels is None:
+        return None
+
+    group1_mask = split_labels == 0
+    group2_mask = split_labels == 1
+
+    group1_count = int(np.sum(group1_mask))
+    group2_count = int(np.sum(group2_mask))
+
+    if (
+        group1_count < min_group_samples
+        or group2_count < min_group_samples
+    ):
+        return None
+
+    # child prototype weightの初期値作成にはfeatureベクトルを使う
+    child_weight_1 = feature_vectors[group1_mask].mean(axis=0)
+    child_weight_2 = feature_vectors[group2_mask].mean(axis=0)
+
+    child_weight_1 = (
+        child_weight_1
+        / np.clip(
+            np.linalg.norm(child_weight_1),
+            1e-12,
+            None
+        )
+    )
+
+    child_weight_2 = (
+        child_weight_2
+        / np.clip(
+            np.linalg.norm(child_weight_2),
+            1e-12,
+            None
+        )
+    )
+
+    return {
+        "child_weight_1":
+            child_weight_1.astype(np.float32),
+
+        "child_weight_2":
+            child_weight_2.astype(np.float32),
+
+        "group1_count":
+            group1_count,
+
+        "group2_count":
+            group2_count
     }
 
 
